@@ -1,0 +1,12 @@
+streamlit
+google-generativeai
+pydantic
+pandas
+python-dotenv
+pytest
+pytest-cov
+pytest-mock
+pytest-playwright
+locust
+bandit
+safety
