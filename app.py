@@ -220,11 +220,16 @@ def generate_excel_download(df_scenarios: pd.DataFrame) -> bytes:
 def clear_analysis():
     st.session_state["analysis_result"] = None
     st.session_state["user_requirement_text"] = ""
-    # Incrementa a chave do uploader para resetar totalmente a caixa de seleção de arquivos
+    # Zera a chave do widget de texto para limpar a caixa visualmente
+    if "user_requirement_input" in st.session_state:
+        st.session_state["user_requirement_input"] = ""
+    # Incrementa a chave do uploader para resetar a caixa de anexos
     st.session_state["uploader_key"] += 1
 
 def load_from_history_item(item):
-    st.session_state["user_requirement_text"] = item.get("requirement_text", "")
+    req_text = item.get("requirement_text", "")
+    st.session_state["user_requirement_text"] = req_text
+    st.session_state["user_requirement_input"] = req_text
     st.session_state["analysis_result"] = item.get("result", None)
 
 # --- SIDEBAR ---
@@ -277,7 +282,6 @@ with col_text:
 with col_img:
     st.markdown("**🖼️ Anexar Telas / Wireframes de UX (Sem limite):**")
     
-    # O file_uploader utiliza uploader_key para ser zerado ao clicar em 'Nova Análise'
     uploaded_files = st.file_uploader(
         "Selecione uma ou mais imagens:",
         type=["png", "jpg", "jpeg"],
@@ -286,7 +290,6 @@ with col_img:
         key=f"ux_images_uploader_{st.session_state['uploader_key']}"
     )
     
-    # Previews das imagens anexadas diretamente do uploader nativo
     if uploaded_files:
         st.caption(f"📷 Imagens ativas para a análise: **{len(uploaded_files)}**")
         for file in uploaded_files:
