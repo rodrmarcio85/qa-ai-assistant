@@ -64,15 +64,17 @@ api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
 if api_key:
     genai.configure(api_key=api_key)
 
-# Estado da Sessão (Inicia limpo com placeholder)
+# Estado da Sessão
 if "analysis_result" not in st.session_state:
     st.session_state["analysis_result"] = None
 if "user_requirement_text" not in st.session_state:
     st.session_state["user_requirement_text"] = ""
+if "uploader_key" not in st.session_state:
+    st.session_state["uploader_key"] = 0
 
 SYSTEM_INSTRUCTION = """
 Você é um Especialista em Quality Assurance (QA) e Engenharia de Requisitos focado em alta produtividade.
-Análise a História de Usuário (e o layout de UX anexado, se houver) de forma exaustiva e completa.
+Análise a História de Usuário (e os layouts de UX anexados, se houver) de forma exaustiva e completa.
 Mapeie TODOS os cenários de teste necessários para garantir 100% de cobertura da história de usuário (Caminho Feliz, Exceção, Borda, Regras de Negócio). Não limite a quantidade de cenários.
 
 Retorne a resposta ESTRITAMENTE no seguinte formato Markdown:
@@ -137,7 +139,7 @@ def parse_markdown_response(text: str) -> dict:
         "test_scenarios": scenarios
     }
 
-def generate_qa_analysis(requirement_text: str, uploaded_image=None):
+def generate_qa_analysis(requirement_text: str, uploaded_files=None):
     # Modelo fixado estritamente em gemini-3.8-flash
     model = genai.GenerativeModel(
         model_name="gemini-3.8-flash",
@@ -149,10 +151,14 @@ def generate_qa_analysis(requirement_text: str, uploaded_image=None):
     )
     
     contents = []
-    if uploaded_image:
-        image = Image.open(uploaded_image)
-        contents.append(image)
-        prompt = f"Analise o layout anexado e o seguinte requisito funcional:\n\n{requirement_text}"
+    
+    # Processa todas as imagens enviadas via file_uploader
+    if uploaded_files:
+        for file in uploaded_files:
+            file.seek(0)
+            img = Image.open(file)
+            contents.append(img)
+        prompt = f"Analise os {len(uploaded_files)} layouts de UX anexados juntamente com o seguinte requisito funcional:\n\n{requirement_text}"
     else:
         prompt = f"Analise o seguinte requisito funcional:\n\n{requirement_text}"
         
@@ -214,6 +220,8 @@ def generate_excel_download(df_scenarios: pd.DataFrame) -> bytes:
 def clear_analysis():
     st.session_state["analysis_result"] = None
     st.session_state["user_requirement_text"] = ""
+    # Incrementa a chave do uploader para resetar totalmente a caixa de seleção de arquivos
+    st.session_state["uploader_key"] += 1
 
 def load_from_history_item(item):
     st.session_state["user_requirement_text"] = item.get("requirement_text", "")
@@ -261,20 +269,29 @@ with col_text:
         "Insira a História de Usuário / Requisito Funcional (Suporta textos longos):",
         value=st.session_state["user_requirement_text"],
         placeholder="Insira ou cole aqui a História de Usuário / Requisito Funcional que deseja analisar...",
-        height=220,
+        height=260,
         key="user_requirement_input"
     )
     st.session_state["user_requirement_text"] = user_requirement
 
 with col_img:
-    st.markdown("**🖼️ Anexar Tela / Wireframe de UX (Opcional):**")
-    uploaded_ux_image = st.file_uploader(
-        "Selecione uma imagem do layout:",
+    st.markdown("**🖼️ Anexar Telas / Wireframes de UX (Sem limite):**")
+    
+    # O file_uploader utiliza uploader_key para ser zerado ao clicar em 'Nova Análise'
+    uploaded_files = st.file_uploader(
+        "Selecione uma ou mais imagens:",
         type=["png", "jpg", "jpeg"],
-        help="A IA vai analisar o layout visual junto com as regras de negócio."
+        accept_multiple_files=True,
+        help="A IA vai analisar todos os layouts visuais anexados junto com as regras de negócio.",
+        key=f"ux_images_uploader_{st.session_state['uploader_key']}"
     )
-    if uploaded_ux_image:
-        st.image(uploaded_ux_image, caption="Layout de UX anexado", use_container_width=True)
+    
+    # Previews das imagens anexadas diretamente do uploader nativo
+    if uploaded_files:
+        st.caption(f"📷 Imagens ativas para a análise: **{len(uploaded_files)}**")
+        for file in uploaded_files:
+            file.seek(0)
+            st.image(file, caption=file.name, use_container_width=True)
 
 col_action1, col_action2 = st.columns([3, 1])
 with col_action1:
@@ -293,13 +310,14 @@ if btn_analyze:
         st.error("🔑 Chave da API não configurada. Verifique o arquivo .env.")
     else:
         start_time = time.time()
+        num_imgs = len(uploaded_files) if uploaded_files else 0
         with st.status("⚡ Processando análise e mapeando regras de negócio...", expanded=True) as status:
             try:
-                st.write("🔍 Identificando ambiguidades e validando regras de interface...")
-                res = generate_qa_analysis(user_requirement, uploaded_ux_image)
+                st.write(f"🔍 Identificando ambiguidades e validando {num_imgs} layout(s)...")
+                res = generate_qa_analysis(user_requirement, uploaded_files)
                 
                 st.session_state["analysis_result"] = res
-                save_to_history(user_requirement, res, has_image=(uploaded_ux_image is not None))
+                save_to_history(user_requirement, res, has_image=(num_imgs > 0))
                 
                 elapsed = round(time.time() - start_time, 2)
                 status.update(label=f"✅ Análise concluída com sucesso em apenas {elapsed} segundos!", state="complete", expanded=False)
