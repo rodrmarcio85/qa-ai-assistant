@@ -47,10 +47,14 @@ def save_to_history(requirement_text: str, analysis_result: dict, has_image: boo
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
 
-def delete_from_history(item_id: str):
-    """Remove um item específico do histórico local."""
+def delete_from_history(item_id: str, item_idx: int):
+    """Remove um item específico do histórico local garantindo compatibilidade com registros antigos."""
     history = load_history()
-    updated_history = [item for item in history if item["id"] != item_id]
+    if item_id and not item_id.startswith("legacy_"):
+        updated_history = [item for item in history if item.get("id") != item_id]
+    else:
+        updated_history = [item for idx, item in enumerate(history) if idx != item_idx]
+        
     with open(HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(updated_history, f, ensure_ascii=False, indent=2)
 
@@ -60,23 +64,17 @@ api_key = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
 if api_key:
     genai.configure(api_key=api_key)
 
-# Estado da Sessão
+# Estado da Sessão (Inicia limpo com placeholder)
 if "analysis_result" not in st.session_state:
     st.session_state["analysis_result"] = None
 if "user_requirement_text" not in st.session_state:
-    st.session_state["user_requirement_text"] = """História de Usuário:
-Como cliente cadastrado no e-commerce, quero realizar o pagamento da minha compra utilizando cartão de crédito para concluir meu pedido.
-
-Regras de Negócio:
-- Deve aceitar bandeiras Visa e Mastercard.
-- Valor mínimo do pedido para cartão de crédito é R$ 20,00.
-- O sistema deve validar o código de segurança (CVV) e data de validade.
-- Se o pagamento for aprovado, o pedido muda para o status "Aguardando Envio" e dispara e-mail de confirmação.
-"""
+    st.session_state["user_requirement_text"] = ""
 
 SYSTEM_INSTRUCTION = """
 Você é um Especialista em Quality Assurance (QA) e Engenharia de Requisitos focado em alta produtividade.
-Análise a História de Usuário (e o layout de UX anexado, se houver) de forma direta e ágil.
+Análise a História de Usuário (e o layout de UX anexado, se houver) de forma exaustiva e completa.
+Mapeie TODOS os cenários de teste necessários para garantir 100% de cobertura da história de usuário (Caminho Feliz, Exceção, Borda, Regras de Negócio). Não limite a quantidade de cenários.
+
 Retorne a resposta ESTRITAMENTE no seguinte formato Markdown:
 
 ---AMBIGUIDADES---
@@ -139,28 +137,14 @@ def parse_markdown_response(text: str) -> dict:
         "test_scenarios": scenarios
     }
 
-def get_available_gemini_model():
-    preferred_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"]
-    try:
-        available = [m.name.replace("models/", "") for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
-        for pref in preferred_models:
-            if pref in available:
-                return pref
-        for m in available:
-            if "gemini" in m:
-                return m
-    except Exception:
-        pass
-    return "gemini-3.5-flash-lite"
-
 def generate_qa_analysis(requirement_text: str, uploaded_image=None):
-    selected_model_name = get_available_gemini_model()
+    # Modelo fixado estritamente em gemini-3.8-flash
     model = genai.GenerativeModel(
-        model_name=selected_model_name,
+        model_name="gemini-3.8-flash",
         system_instruction=SYSTEM_INSTRUCTION,
         generation_config={
             "temperature": 0.1,
-            "max_output_tokens": 2048
+            "max_output_tokens": 4096
         }
     )
     
@@ -182,7 +166,7 @@ def generate_excel_download(df_scenarios: pd.DataFrame) -> bytes:
     existing_cols = [c for c in cols_order if c in df_scenarios.columns]
     df_export = df_scenarios[existing_cols].copy()
     
-    df_export = df_export.rename(columns={'id': 'ID', 'title': 'Título', 'gherkin': 'BDD (Gherkin)', 'type': 'Tipo'})
+    df_export.rename(columns={'id': 'ID', 'title': 'Título', 'gherkin': 'BDD (Gherkin)', 'type': 'Tipo'}, inplace=True)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -230,12 +214,10 @@ def generate_excel_download(df_scenarios: pd.DataFrame) -> bytes:
 def clear_analysis():
     st.session_state["analysis_result"] = None
     st.session_state["user_requirement_text"] = ""
-    if "user_requirement_input" in st.session_state:
-        st.session_state["user_requirement_input"] = ""
 
 def load_from_history_item(item):
-    st.session_state["user_requirement_text"] = item["requirement_text"]
-    st.session_state["analysis_result"] = item["result"]
+    st.session_state["user_requirement_text"] = item.get("requirement_text", "")
+    st.session_state["analysis_result"] = item.get("result", None)
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -246,17 +228,20 @@ with st.sidebar:
     
     history_items = load_history()
     if history_items:
-        for item in history_items:
+        for idx, item in enumerate(history_items):
             col_hist_btn, col_hist_del = st.columns([5, 1])
             with col_hist_btn:
-                button_label = f"📅 {item['timestamp']}\n📝 {item['preview']}"
-                if st.button(button_label, key=f"hist_{item['id']}", use_container_width=True):
+                item_id = item.get('id', f"legacy_{idx}")
+                preview_text = item.get('preview', item.get('summary', 'Análise salva'))
+                button_label = f"📅 {item.get('timestamp', 'Sem data')}\n📝 {preview_text}"
+                
+                if st.button(button_label, key=f"hist_{item_id}_{idx}", use_container_width=True):
                     load_from_history_item(item)
                     st.rerun()
             with col_hist_del:
-                if st.button("🗑️", key=f"del_{item['id']}", help="Excluir do histórico"):
-                    delete_from_history(item["id"])
-                    if st.session_state.get("analysis_result") == item["result"]:
+                if st.button("🗑️", key=f"del_{item_id}_{idx}", help="Excluir do histórico"):
+                    delete_from_history(item.get("id"), idx)
+                    if st.session_state.get("analysis_result") == item.get("result"):
                         clear_analysis()
                     st.rerun()
     else:
@@ -275,6 +260,7 @@ with col_text:
     user_requirement = st.text_area(
         "Insira a História de Usuário / Requisito Funcional (Suporta textos longos):",
         value=st.session_state["user_requirement_text"],
+        placeholder="Insira ou cole aqui a História de Usuário / Requisito Funcional que deseja analisar...",
         height=220,
         key="user_requirement_input"
     )
@@ -359,7 +345,6 @@ if result:
     with tab2:
         st.info("💡 **Dica de Produtividade:** Você pode dar um duplo clique em qualquer célula abaixo para editar os cenários. Os downloads abaixo serão atualizados com as suas alterações!")
         
-        # Tabela interativa com st.data_editor
         edited_df = st.data_editor(
             df_scenarios,
             use_container_width=True,
@@ -376,7 +361,6 @@ if result:
     st.subheader("💾 3. Exportação")
     col1, col2 = st.columns(2)
     
-    # Gera o Excel usando o DataFrame editado pelo usuário
     excel_bytes = generate_excel_download(edited_df)
     col1.download_button(
         label="📊 Baixar Casos de Teste (.XLSX)",
@@ -386,13 +370,11 @@ if result:
         use_container_width=True
     )
     
-    # Gera o Markdown usando os dados editados pelo usuário
     md_content = "# Relatório de Análise e Casos de Teste\n\n## Ambiguidades Mapeadas\n"
     for amb in ambiguities:
         md_content += f"- {amb}\n"
     md_content += "\n## Casos de Teste (BDD)\n"
     
-    # Itera sobre o DataFrame editado
     for _, row in edited_df.iterrows():
         md_content += f"### [{row.get('id', 'N/A')}] {row.get('title', 'Sem título')} ({row.get('type', 'Geral')})\n```gherkin\n{row.get('gherkin', '')}\n```\n\n"
     
